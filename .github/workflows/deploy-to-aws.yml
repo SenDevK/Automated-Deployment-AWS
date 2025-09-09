@@ -9,12 +9,15 @@ on:
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: my-aws-app
+  ECS_SERVICE: my-app-service
+  ECS_CLUSTER: my-app-cluster
+  CONTAINER_NAME: my-app-container
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: read  
       id-token: write # This is required for AWS OIDC authentication
 
     steps:
@@ -24,7 +27,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsRole # We will create this role
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsRole
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -35,30 +38,29 @@ jobs:
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }} # Use the Git commit hash as a unique image tag
+          IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./backend
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Update ECS Task Definition and Service
-        env:
-          TASK_DEFINITION_FAMILY: "my-app-task"
-          SERVICE_NAME: "my-app-service"
-          CLUSTER_NAME: "my-app-cluster"
+      - name: Download task definition
         run: |
-          # Create a new task definition revision with the new image
-          aws ecs register-task-definition \
-            --family $TASK_DEFINITION_FAMILY \
-            --container-definitions "[{\"name\":\"my-app-container\",\"image\":\"${{ steps.build-image.outputs.image }}\"}]" \
-            --execution-role-arn "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecs-task-execution-role" \
-            --cpu "256" \
-            --memory "512" \
-            --network-mode "awsvpc" \
-            --requires-compatibilities "FARGATE"
+          aws ecs describe-task-definition --task-definition my-app-task --query taskDefinition > task-definition.json
 
-          # Update the ECS service to use the new task definition revision
-          aws ecs update-service \
-            --cluster $CLUSTER_NAME \
-            --service $SERVICE_NAME \
-            --task-definition $TASK_DEFINITION_FAMILY
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
