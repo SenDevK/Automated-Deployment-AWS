@@ -1,0 +1,64 @@
+name: Deploy to AWS ECS Fargate
+
+# This workflow runs on every push to the 'main' branch
+on:
+  push:
+    branches: [ "main" ]
+
+# These are environment variables available to all jobs in the workflow
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: my-aws-app
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # This is required for AWS OIDC authentication
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsRole # We will create this role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image to ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }} # Use the Git commit hash as a unique image tag
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./backend
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Update ECS Task Definition and Service
+        env:
+          TASK_DEFINITION_FAMILY: "my-app-task"
+          SERVICE_NAME: "my-app-service"
+          CLUSTER_NAME: "my-app-cluster"
+        run: |
+          # Create a new task definition revision with the new image
+          aws ecs register-task-definition \
+            --family $TASK_DEFINITION_FAMILY \
+            --container-definitions "[{\"name\":\"my-app-container\",\"image\":\"${{ steps.build-image.outputs.image }}\"}]" \
+            --execution-role-arn "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecs-task-execution-role" \
+            --cpu "256" \
+            --memory "512" \
+            --network-mode "awsvpc" \
+            --requires-compatibilities "FARGATE"
+
+          # Update the ECS service to use the new task definition revision
+          aws ecs update-service \
+            --cluster $CLUSTER_NAME \
+            --service $SERVICE_NAME \
+            --task-definition $TASK_DEFINITION_FAMILY
