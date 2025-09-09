@@ -12,6 +12,7 @@ env:
   ECS_SERVICE: my-app-service
   ECS_CLUSTER: my-app-cluster
   CONTAINER_NAME: my-app-container
+  TASK_DEFINITION_FILE: task-definition.json # Path to the new template file
 
 jobs:
   deploy:
@@ -44,15 +45,11 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Download task definition
-        run: |
-          aws ecs describe-task-definition --task-definition my-app-task --query taskDefinition > task-definition.json
-
       - name: Fill in the new image ID in the Amazon ECS task definition
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          task-definition: task-definition.json
+          task-definition: ${{ env.TASK_DEFINITION_FILE }}
           container-name: ${{ env.CONTAINER_NAME }}
           image: ${{ steps.build-image.outputs.image }}
 
